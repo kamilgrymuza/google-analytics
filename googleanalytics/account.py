@@ -3,6 +3,7 @@
 """
 """
 
+import copy
 import functools
 
 import yaml
@@ -16,11 +17,11 @@ from .columns import Column, Segment, ColumnList, SegmentList
 
 class Account(object):
     """
-    An account is usually but not always associated with a single 
-    website. It will often contain multiple web properties 
+    An account is usually but not always associated with a single
+    website. It will often contain multiple web properties
     (different parts of your website that you've configured
     Google Analytics to analyze separately, or simply the default
-    web property that every website has in Google Analytics), 
+    web property that every website has in Google Analytics),
     which in turn will have one or more profiles.
 
     You should navigate to a profile to run queries.
@@ -45,8 +46,8 @@ class Account(object):
     @utils.memoize
     def webproperties(self):
         """
-        A list of all web properties on this account. You may 
-        select a specific web property using its name, its id 
+        A list of all web properties on this account. You may
+        select a specific web property using its name, its id
         or an index.
 
         ```
@@ -74,7 +75,7 @@ class Account(object):
 class WebProperty(object):
     """
     A web property is a particular website you're tracking in Google Analytics.
-    It has one or more profiles, and you will need to pick one from which to 
+    It has one or more profiles, and you will need to pick one from which to
     launch your queries.
     """
 
@@ -83,7 +84,7 @@ class WebProperty(object):
         self.raw = raw
         self.id = raw['id']
         self.name = raw['name']
-        # on rare occassions, e.g. for abandoned web properties, 
+        # on rare occassions, e.g. for abandoned web properties,
         # a website url might not be present
         self.url = raw.get('websiteUrl')
 
@@ -91,8 +92,8 @@ class WebProperty(object):
     @utils.memoize
     def profiles(self):
         """
-        A list of all profiles on this web property. You may 
-        select a specific profile using its name, its id 
+        A list of all profiles on this web property. You may
+        select a specific profile using its name, its id
         or an index.
 
         ```
@@ -105,7 +106,7 @@ class WebProperty(object):
             accountId=self.account.id,
             webPropertyId=self.id).execute()['items']
         profiles = [Profile(raw, self) for raw in raw_profiles]
-        return addressable.List(profiles, indices=['id', 'name'], insensitive=True)        
+        return addressable.List(profiles, indices=['id', 'name'], insensitive=True)
 
     def query(self, *vargs, **kwargs):
         """
@@ -121,7 +122,7 @@ class WebProperty(object):
 class Profile(object):
     """
     A profile is a particular analytics configuration of a web property.
-    Each profile belongs to a web property and an account. As all 
+    Each profile belongs to a web property and an account. As all
     queries using the Google Analytics API run against a particular
     profile, queries can only be created from a `Profile` object.
 
@@ -146,20 +147,20 @@ class Profile(object):
 
 class ReportingAPI(object):
     REPORT_TYPES = {
-        'ga': 'ga', 
-        'realtime': 'rt', 
+        'ga': 'ga',
+        'realtime': 'rt',
     }
 
     QUERY_TYPES = {
-        'ga': query.CoreQuery, 
-        'realtime': query.RealTimeQuery, 
+        'ga': query.CoreQuery,
+        'realtime': query.RealTimeQuery,
     }
 
     def __init__(self, endpoint, profile):
         """
         Endpoint can be one of `ga` or `realtime`.
         """
-        
+
         # various shortcuts
         self.profile = profile
         self.account = account = profile.account
@@ -168,7 +169,7 @@ class ReportingAPI(object):
         self.endpoint_type = endpoint
         self.endpoint = getattr(root, endpoint)()
 
-        # query interface 
+        # query interface
         self.report_type = self.REPORT_TYPES[endpoint]
         self.query = functools.partial(self.QUERY_TYPES[endpoint], self)
 
@@ -177,6 +178,39 @@ class ReportingAPI(object):
     def columns(self):
         return addressable.filter(columns.is_supported, self.all_columns)
 
+    def _expanded_column(self, raw_column):
+        """
+        Returns a list of columns based on raw_column.
+        """
+        columns = []
+        min_index = int(raw_column["attributes"]["minTemplateIndex"])
+        max_index = int(raw_column["attributes"]["maxTemplateIndex"])
+        for index in range(min_index, max_index+1):
+            column_copy = copy.deepcopy(raw_column)
+            for key in column_copy.keys():
+                if "XX" in column_copy[key]:
+                    column_copy[key] = column_copy[key].replace(
+                        "XX", "{}".format(index+1))
+            column_obj = Column.from_metadata(column_copy)[0]
+            columns.append(column_obj)
+        return columns
+
+    def _column_needs_expanding(self, raw_column):
+        return "XX" in raw_column["id"]
+
+    def _range_columns_expanded(self, raw_columns):
+        """
+        Returns a flattened list of columns, with columns containing XX expanded
+        according to `minTemplateIndex` and `maxTemplateIndex`.
+        """
+        columns = []
+        for column in raw_columns:
+            if self._column_needs_expanding(column):
+                columns.extend(self._expanded_column(column))
+            else:
+                columns.append(utils.flatten(Column.from_metadata(column)))
+        return columns
+
     @property
     @utils.memoize
     def all_columns(self):
@@ -184,7 +218,7 @@ class ReportingAPI(object):
             reportType=self.report_type
             )
         raw_columns = query.execute()['items']
-        hydrated_columns = utils.flatten(map(Column.from_metadata, raw_columns))
+        hydrated_columns = self._range_columns_expanded(raw_columns)
         return ColumnList(hydrated_columns, unique=False)
 
     @property
@@ -224,7 +258,7 @@ class RealTimeReportingAPI(ReportingAPI):
         super(RealTimeReportingAPI, self).__init__('realtime', profile)
 
     # in principle, we should be able to reuse everything from the ReportingAPI
-    # base class, but the Real Time Reporting API is still in beta and some 
+    # base class, but the Real Time Reporting API is still in beta and some
     # things – like a metadata endpoint – are missing.
     @property
     @utils.memoize
